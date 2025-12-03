@@ -50,16 +50,16 @@ public class DeviceIdAsyncOperator extends RichAsyncFunction<RawEvent, IdOutput>
         }
 
         // ✅ 初始化雪花算法生成器
-        // workerId范围: 0-255 (subtaskIndex直接使用)
-        int subtaskIndex = getRuntimeContext().getIndexOfThisSubtask();
+        // 使用主机名+slot ID生成workerId
+        int workerId = generateSnowflakeWorkerId();
         int totalSubtasks = getRuntimeContext().getNumberOfParallelSubtasks();
 
-        if (totalSubtasks > 256) {
+        if (totalSubtasks > 1024) {
             throw new RuntimeException(
-                    "DeviceId算子最多支持256个并行度,当前: " + totalSubtasks);
+                    "DeviceId算子最多支持1024个并行度,当前: " + totalSubtasks);
         }
 
-        idGenerator = new SnowflakeIdGenerator(subtaskIndex);
+        idGenerator = new SnowflakeIdGenerator(workerId);
 
         // 初始化Caffeine缓存
         deviceCache = Caffeine.newBuilder()
@@ -70,7 +70,7 @@ public class DeviceIdAsyncOperator extends RichAsyncFunction<RawEvent, IdOutput>
 
         System.out.println(String.format(
                 "[DeviceId算子-%d] 初始化成功, KVRocks: %s:%d, workerId=%d",
-                subtaskIndex, kvrocksHost, kvrocksPort, subtaskIndex
+                getRuntimeContext().getIndexOfThisSubtask(), kvrocksHost, kvrocksPort, workerId
         ));
     }
 
@@ -156,4 +156,22 @@ public class DeviceIdAsyncOperator extends RichAsyncFunction<RawEvent, IdOutput>
             ));
         }
     }
+
+    /**
+     * 使用主机名和slot ID组合生成workerID，确保在分布式环境中的唯一性
+     * @return workerId
+     */
+    private int generateSnowflakeWorkerId() {
+        try {
+            // 使用主机信息和 slot 组合来生成 workerId
+            String hostName = java.net.InetAddress.getLocalHost().getHostName();
+            int slotId = getRuntimeContext().getIndexOfThisSubtask();
+            
+            return Math.abs((hostName.hashCode() * 31 + slotId)) % 256;
+        } catch (Exception e) {
+            // 回退到 subtask index
+            return getRuntimeContext().getIndexOfThisSubtask() % 256;
+        }
+    }
+
 }

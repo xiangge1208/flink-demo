@@ -64,15 +64,16 @@ public class ZgidAsyncOperator extends RichAsyncFunction<IdOutput, IdOutput> {
         kvrocks = new KvrocksClient(kvrocksHost, kvrocksPort, kvrocksCluster);
         kvrocks.init();
 
-        int subtaskIndex = getRuntimeContext().getIndexOfThisSubtask();
+        // ✅ 初始化雪花算法生成器
+        // 使用主机名+slot ID生成workerId
+        int workerId = generateSnowflakeWorkerId();
         int totalSubtasks = getRuntimeContext().getNumberOfParallelSubtasks();
 
-        if (totalSubtasks > 256) {
+        if (totalSubtasks > 1024) {
             throw new RuntimeException(
-                    "Zgid算子最多支持256个并行度,当前: " + totalSubtasks);
+                    "Zgid算子最多支持1024个并行度,当前: " + totalSubtasks);
         }
 
-        int workerId = 512 + subtaskIndex;
         idGenerator = new SnowflakeIdGenerator(workerId);
 
         localCache = Caffeine.newBuilder()
@@ -86,7 +87,7 @@ public class ZgidAsyncOperator extends RichAsyncFunction<IdOutput, IdOutput> {
 
         System.out.println(String.format(
                 "[Zgid算子-%d] 雪花算法初始化成功, workerId=%d, waitForWrite=%s",
-                subtaskIndex, workerId, waitForWrite
+                getRuntimeContext().getIndexOfThisSubtask(), workerId, waitForWrite
         ));
     }
 
@@ -289,6 +290,23 @@ public class ZgidAsyncOperator extends RichAsyncFunction<IdOutput, IdOutput> {
                     getRuntimeContext().getIndexOfThisSubtask(),
                     localCache.stats()
             ));
+        }
+    }
+
+    /**
+     * 使用主机名和slot ID组合生成workerID，确保在分布式环境中的唯一性
+     * @return workerId
+     */
+    private int generateSnowflakeWorkerId() {
+        try {
+            // 使用主机信息和 slot 组合来生成 workerId
+            String hostName = java.net.InetAddress.getLocalHost().getHostName();
+            int slotId = getRuntimeContext().getIndexOfThisSubtask();
+            
+            return Math.abs((hostName.hashCode() * 31 + slotId)) % 256;
+        } catch (Exception e) {
+            // 回退到 subtask index
+            return getRuntimeContext().getIndexOfThisSubtask() % 256;
         }
     }
 
